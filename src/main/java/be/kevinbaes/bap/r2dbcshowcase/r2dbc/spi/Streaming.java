@@ -7,6 +7,7 @@ import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
 import java.io.IOException;
+import java.util.List;
 
 /**
  * Demonstrate lazy handling of query results
@@ -30,29 +31,32 @@ public class Streaming {
      * select all:  4.5 - 6.5 seconds
      **************/
     private void run() throws InterruptedException, IOException {
-        connectionFactory = ConnectionUtil.postgresConnectionFactory();
+        connectionFactory = ConnectionUtil.pooledConnectionFactory();
         queryUtil = new QueryUtil(connectionFactory);
 
         queryUtil.clearGoalTable();
 
-        // set this to 2750 to break toStream
+        // set this to higher numbers (5000+) to break toStream, system dependent when it breaks
         // exception is either NumberFormatException or StringIndexOutOfBoundsException
-        final int goalCount = 100000;
-
-        Flux<Goal> goalFlux = insertGoals(goalCount)
+        final int goalCount = 5000;
+        final long start = System.currentTimeMillis();
+        Flux<Goal> goalFlux = insertGoalsSeparateStatements(goalCount)
             .thenMany(selectAllGoals());
 
-        // this breaks for >2.5K results
+        // this breaks for large amounts of results results
 //        goalFlux.toStream().forEach(System.out::println);
 
-        // the below approaches work for >2.5K results
-//        System.out.println(goalFlux.collectList().block().size());
+        List<Goal> goals = goalFlux.collectList().block();
+        final long end = System.currentTimeMillis();
+
+        // Takes <5 seconds on my machine
+        System.out.println("time to insert and fetch " + goals.size() + " goals: [" + (end - start) + "] ms.");
 //
-        goalFlux.subscribe(
-                System.out::println,
-                System.err::println,
-                () -> System.out.println("complete")
-        );
+//        goalFlux.subscribe(
+//                System.out::println,
+//                System.err::println,
+//                () -> System.out.println("complete")
+//        );
 
         System.in.read();
     }
@@ -98,5 +102,19 @@ public class Streaming {
 
             return connection.createStatement(values.toString()).execute();
         });
+    }
+
+    /**
+     * Insert n goals as separate insert statements, does not ensure ordering
+     * @param n
+     * @return
+     */
+    private Flux<Result> insertGoalsSeparateStatements(int n) {
+        return Flux.range(1, n)
+            .flatMap(i -> queryUtil.executeStatement(conn -> {
+                return conn
+                    .createStatement("insert into goal (name) values ($1)").bind("$1", "goal" + i)
+                    .execute();
+            }));
     }
 }
